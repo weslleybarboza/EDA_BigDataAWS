@@ -1,0 +1,80 @@
+Crie um bucket no S3
+  Crie no Bucket eda-landing-zone-us-east-2-<Account ID> uma pasta com o nome DadosAbertos e uma subpasta com o nome Receita
+  Faca upload dos arquivos da pasta S3 (Receita_AAAAA.csv) para a pasta Receita
+  Crie no Bucket eda-raw-zone-us-east-2-<Account ID> uma pasta com o nome DadosAbertos e uma subpasta com o nome Receita
+  Crie o Bucket para staging zone, sugestao de nome: eda-staging-zone-us-east-2-<Account ID>
+  Crie o Bucket para armazenar artefatos de trabalho, sugestao de nome: eda-artefacts-us-east-2-<Account ID>
+  No bucket de artefatos crie a pasta jar e importe o arquivo delta-core_2.12-1.0.0.jar disponivel na para JAR enviada junto com o material
+
+Crie um IAM role com as permissoes apropriadas para o AWS Glue
+  Trusted entity type: AWS service
+  Use cases for other AWS services: Glue
+  Permission policies:
+    AWSGlueServiceRole se criar a pasta com nome iniciando com aws-glue
+    AdministratorAccess para facilitar os acesso e testes, porem em ambientes produtivos deve-se considerar restringir os acesso de acordo com a necessidade
+  Role name: aws-glue-service-role
+
+Crie um database no AWS Glue
+  Name: dados_abertos
+  Location: s3://eda-landing-zone-us-east-2-<Account ID>/DadosAbertos/
+
+Crie e execute um Crawler
+  Data Catalog > Databases > Tables > Add tables using crawler
+  Name: DadosAbertosCrawler
+  Add Data Source
+    S3 path: s3://eda-landing-zone-us-east-2-<Account ID>/DadosAbertos/Receita/
+
+Crie um database no AWS Glue
+  Name: dados_abertos_raw
+  Location: s3://eda-landing-zone-us-east-2-<Account ID>/DadosAbertos/
+
+Crie um Job ETL para transformar CSV em Parquet usando Visual ETL
+  Data source - AWS Glue Data Catalog
+  Transfors - Derived Column
+    Name: vr_receita
+    Name of the derived column: vr_receita
+    SQL Expression: replace(concat('0', vr_receita), ',', '.')
+  Transforms - Change Schema
+    Alterar as colunas aa_exercicio, co_ug, co_gestao, in_mes para int
+    Excluir as colunas vr_receita_previsa e vr_receita_realizada
+    Altera a tabela dt_carga para timestamp
+  Target Amazon s3
+    S3 Target Location: s3://eda-raw-zone-us-east-2-763308243640/DadosAbertos/Receita/
+    Database: dados_abertos_raw
+    Table name: receita
+    Partition (0): aa_exercicio
+
+  Acesse Job details e selecione a IAM Role criado no processo inicial
+
+Crie um job ETL via Script Editor para transformacao do parquet em Delta usando PySpark selecionando a Engine Spark e faca o upload do arquivo TransformRawToStaging.py
+  Na aba "Job details" altere as seguintes configuracoes:
+    IAM Role: selecione a IAM criada no inicio do processo
+    Glue version: Glue 3.0 - Supports spark 3.3, Scala 2, Python 3 (ou a versao que seja compativel com o Delta que esta utilizando)
+    Em "Advanced Properties" desmarce a opcao "Write Spark UI logs to Amazon S3." e inclua em Libraries para os parametros "Python library path" e "Dependent JARs path" o URI do arquivo Delta. Exemplo: "s3://eda-artefacts-us-east-2-<Account ID>/jar/delta-core_2.12-1.0.0.jar"
+
+
+
+Links uteis:
+Versao do Glue ETL e Delta:
+  https://docs.aws.amazon.com/pt_br/glue/latest/dg/aws-glue-programming-etl-format-delta-lake.html
+Repositorio do Mavem para baixar o Jar do Delta:
+  https://mvnrepository.com/artifact/io.delta/delta-core
+
+Consultas para o Athena
+SELECT *
+FROM "dados_abertos".receita
+LIMIT 100;
+
+SELECT
+    format('%,.2f', sum(cast(replace(vr_receita, ',', '.') as double))) as vr_receita_total
+FROM "dados_abertos".receita
+WHERE aa_exercicio = 2020; --17,31MB
+
+SELECT
+   sum(vr_receita) as vr_receita_total
+FROM "dados_abertos_raw".receita
+WHERE aa_exercicio = 2020; --34,11KB
+
+SELECT aa_exercicio, count(*) as qt_registros
+FROM "dados_abertos".receita
+GROUP BY aa_exercicio;
